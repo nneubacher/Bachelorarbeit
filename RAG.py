@@ -4,6 +4,7 @@
 
 import os
 import pandas as pd
+import numpy as np
 import json
 import random
 import chromadb
@@ -16,6 +17,8 @@ from tempfile import NamedTemporaryFile
 from langchain import hub
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
 
 """
     Load OpenAI API key from environment variable
@@ -51,7 +54,7 @@ CHECKPOINT_PATH = 'data/predictions.json'
 """
 
 prompt = hub.pull("nneubacher/rag-squad")
-llm = ChatOpenAI(model_name="gpt-3.5-turbo-0125", temperature=0.2)
+llm = ChatOpenAI(model_name="gpt-3.5-turbo-0125", temperature=0.1)
 rag_chain = prompt | llm | StrOutputParser()
 
 """
@@ -68,7 +71,6 @@ def shuffle_dataset_once(input_path, output_path):
         print("Dataset shuffled and saved.")
     else:
         print("Shuffled dataset already exists.")
-
 
 """
     Define loader for questions:
@@ -125,7 +127,7 @@ def preprocess(text):
             - returns value between 0 and 1, 1 if the sets share the exact same tokens
 """
 
-def jaccard_similarity(predicted_answer, true_answers):
+def calculate_jaccard_similarity(predicted_answer, true_answers):
     predicted_tokens = set(preprocess(predicted_answer))
     best_similarity = 0
     for true_answer in true_answers:
@@ -137,14 +139,56 @@ def jaccard_similarity(predicted_answer, true_answers):
     return best_similarity
 
 """
+    Computes the cosine similarity between the predicted answer and each true answer,
+    returning the highest score.
+"""
+
+def calculate_cosine_similarity(predicted_answer, true_answers):
+    # Start with the default TfidfVectorizer configuration
+    tfidf_vectorizer = TfidfVectorizer()
+    best_similarity = 0.0
+
+    documents = [predicted_answer] + true_answers
+    try:
+        # First attempt with default settings
+        tfidf_matrix = tfidf_vectorizer.fit_transform(documents)
+        cosine_similarities = sklearn_cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])
+        best_similarity = max(cosine_similarities[0])
+    except ValueError as e:
+        # Fallback to a more permissive TfidfVectorizer configuration if the first attempt fails
+        tfidf_vectorizer = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b", stop_words=None)
+        try:
+            tfidf_matrix = tfidf_vectorizer.fit_transform(documents)
+            # Check if the second attempt was successful
+            if tfidf_matrix.shape[1] > 0:
+                cosine_similarities = sklearn_cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])
+                best_similarity = max(cosine_similarities[0])
+        except ValueError:
+            # If vectorization fails again, log the error or handle it as needed
+            print(f"TF-IDF vectorization failed again: {e}. Predicted answer: '{predicted_answer}', True answer: '{true_answers}'")
+
+    return best_similarity
+
+"""
     Function for evaluation of similarity:
         - evaluates predicted answer similar to ground truth answer using Jaccard similarity
             - preliminary threshold arbitrarily set to 0.4 
 """
 
-def evaluate_answers(predicted_answer, true_answers, threshold=1.0):
-    similarity = jaccard_similarity(predicted_answer, true_answers)
+def evaluate_answers_jaccard(predicted_answer, true_answers, threshold=1.0):
+    similarity = calculate_jaccard_similarity(predicted_answer, true_answers)
     return similarity >= threshold, similarity
+
+def evaluate_answers_cosine(predicted_answer, true_answers, threshold=0.4):
+    similarity = calculate_cosine_similarity(predicted_answer, true_answers)
+    return similarity >= threshold, similarity
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom encoder for numpy data types."""
+    def default(self, obj):
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return json.JSONEncoder.default(self, obj)
 
 """
     Function for saving evaluation:
@@ -152,16 +196,18 @@ def evaluate_answers(predicted_answer, true_answers, threshold=1.0):
         - updates number of correct and total predictions
 """
 
-def save_checkpoint(data, correct_predictions, total_predictions, correct_contexts, total_questions, file_path=CHECKPOINT_PATH):
+def save_checkpoint(data, current_index, correct_predictions_jaccard, correct_predictions_cosine, total_predictions, correct_contexts, total_questions, file_path=CHECKPOINT_PATH):
     checkpoint_data = {
         "data": data,
-        "correct_predictions": correct_predictions,
+        "current_index": current_index,
+        "correct_predictions_jaccard": correct_predictions_jaccard,
+        "correct_predictions_cosine": correct_predictions_cosine,
         "total_predictions": total_predictions,
         "correct_contexts": correct_contexts,
         "total_questions": total_questions
     }
     with NamedTemporaryFile('w', delete=False) as tf:
-        json.dump(checkpoint_data, tf)
+        json.dump(checkpoint_data, tf, cls=NumpyEncoder)
         temp_name = tf.name
     os.replace(temp_name, file_path)
 
@@ -175,7 +221,7 @@ def load_checkpoint(file_path=CHECKPOINT_PATH):
         with open(file_path, 'r') as file:
             return json.load(file)
     except FileNotFoundError:
-        return {"data": [], "current_index": 0, "correct_predictions": 0, "total_predictions": 0, "correct_contexts": 0, "total_questions": 0}
+        return {"data": [], "current_index": 0, "correct_predictions_jaccard": 0, "correct_predictions_cosine": 0, "total_predictions": 0, "correct_contexts": 0, "total_questions": 0}
 
 """
     Function to invoke RAG chain:
@@ -216,7 +262,8 @@ def main_evaluation(file_path=SHUFFLED_DATASET_PATH, max_evaluations=10000):
     checkpoint = load_checkpoint()
     predictions_details = checkpoint.get('data', [])
     current_index = checkpoint.get('current_index', 0)
-    correct_predictions = checkpoint.get('correct_predictions', 0)
+    correct_predictions_jaccard = checkpoint.get('correct_predictions_jaccard', 0)
+    correct_predictions_cosine = checkpoint.get('correct_predictions_cosine', 0)
     total_predictions = checkpoint.get('total_predictions', 0)
     correct_contexts = checkpoint.get('correct_contexts', 0)
     total_questions = checkpoint.get('total_questions', 0)
@@ -241,31 +288,39 @@ def main_evaluation(file_path=SHUFFLED_DATASET_PATH, max_evaluations=10000):
 
         predicted_answer = get_answer_with_rag_chain(rag_chain, question, contexts)
         
-        is_similar, similarity_score = evaluate_answers(predicted_answer, true_answers)
+        is_similar_jaccard, similarity_score_jaccard = evaluate_answers_jaccard(predicted_answer, true_answers)
+
+        is_similar_cosine, similarity_score_cosine = evaluate_answers_cosine(predicted_answer, true_answers)
         
         predictions_details.append({
             "doc_id": doc_id,
             "question": question,
             "predicted_answer": predicted_answer,
             "true_answers": true_answers,
-            "is_similar": is_similar,
-            "similarity_score": similarity_score,
+            "is_similar_jaccard": is_similar_jaccard,
+            "similarity_score_jaccard": similarity_score_jaccard,
+            "is_similar_cosine": is_similar_cosine,
+            "similarity_score_cosine": similarity_score_cosine,
             "context_found": context_found
         })
-        if is_similar:
-            correct_predictions += 1
+        if is_similar_jaccard:
+            correct_predictions_jaccard += 1
+        if is_similar_cosine:
+            correct_predictions_cosine += 1
         total_predictions += 1
 
         current_index += 1
-        save_checkpoint(data=predictions_details, correct_predictions=correct_predictions, total_predictions=total_predictions, correct_contexts=correct_contexts, total_questions=total_questions, file_path='checkpoint.json')
+        save_checkpoint(data=predictions_details, current_index=current_index, correct_predictions_jaccard=correct_predictions_jaccard, correct_predictions_cosine=correct_predictions_cosine, total_predictions=total_predictions, correct_contexts=correct_contexts, total_questions=total_questions, file_path='checkpoint.json')
         
         if total_predictions >= 10000:
             break
 
     if total_predictions > 0:
-        accuracy = correct_predictions / total_predictions
+        accuracy_jaccard = correct_predictions_jaccard / total_predictions
+        accuracy_cosine = correct_predictions_cosine / total_predictions
         recall = correct_contexts / total_questions
-        print(f"Accuracy: {accuracy:.2f}")
+        print(f"Accuracy with Jaccard: {accuracy_jaccard:.2f}")
+        print(f"Accuracy with Cosine: {accuracy_cosine:.2f}")
         print(f"Recall: {recall:.2f}")
     else:
         print("No predictions were made.")
