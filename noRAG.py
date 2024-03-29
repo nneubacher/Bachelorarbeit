@@ -36,8 +36,8 @@ DIR = os.path.dirname(os.path.abspath(__file__))
     Define checkpoint/output path for predictions by RAG system
 """
 
-SHUFFLED_DATASET_PATH = os.path.join(DIR, 'data/shuffled_squad.parquet')
-CHECKPOINT_PATH = 'predictions_gpt.json'
+SHUFFLED_DATASET_PATH = os.path.join(DIR, 'data/shuffled_squad_test.parquet')
+CHECKPOINT_PATH = 'checkpoint_gpt.json'
 
 """
     Setup RAG-Chain:
