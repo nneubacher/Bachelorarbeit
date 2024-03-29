@@ -33,7 +33,7 @@ if oai_api_key is None:
 """
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(DIR, 'chromaDB')
+DB_PATH = os.path.join(DIR, 'vectorDB')
 client = chromadb.PersistentClient(path=DB_PATH, settings=Settings(allow_reset=True, anonymized_telemetry=False))
 openai_ef = embedding_functions.OpenAIEmbeddingFunction(api_key=oai_api_key, model_name="text-embedding-3-large")
 collection = client.get_collection(name="data", embedding_function=openai_ef)
@@ -44,8 +44,8 @@ collection = client.get_collection(name="data", embedding_function=openai_ef)
     Define checkpoint/output path for predictions by RAG system
 """
 
-SHUFFLED_DATASET_PATH = os.path.join(DIR, 'data/shuffled_squad_test.parquet')
-CHECKPOINT_PATH = 'data/predictions.json'
+SHUFFLED_DATASET_PATH = os.path.join(DIR, 'data/shuffled_squad.parquet')
+CHECKPOINT_PATH = 'predictions.json'
 
 """
     Setup RAG-Chain:
@@ -171,15 +171,15 @@ def calculate_cosine_similarity(predicted_answer, true_answers):
 
 """
     Function for evaluation of similarity:
-        - evaluates predicted answer similar to ground truth answer using Jaccard similarity
-            - preliminary threshold arbitrarily set to 0.4 
+        - evaluates predicted answer similar to ground truth answer using Jaccard and Cosine similarity
+            - preliminary threshold arbitrarily set to 0.5 
 """
 
-def evaluate_answers_jaccard(predicted_answer, true_answers, threshold=1.0):
+def evaluate_answers_jaccard(predicted_answer, true_answers, threshold=0.5):
     similarity = calculate_jaccard_similarity(predicted_answer, true_answers)
     return similarity >= threshold, similarity
 
-def evaluate_answers_cosine(predicted_answer, true_answers, threshold=0.4):
+def evaluate_answers_cosine(predicted_answer, true_answers, threshold=0.5):
     similarity = calculate_cosine_similarity(predicted_answer, true_answers)
     return similarity >= threshold, similarity
 
@@ -253,9 +253,9 @@ def get_answer_with_rag_chain(rag_chain, question, contexts):
             - saves predictions and evaluates preliminary accuracy (based on the threshold of 0.4)
 """
 
-def main_evaluation(file_path=SHUFFLED_DATASET_PATH, max_evaluations=10000):
+def main_evaluation(file_path=SHUFFLED_DATASET_PATH):
 
-    shuffle_dataset_once('data/squad_test.parquet', file_path)
+    shuffle_dataset_once('data/squad.parquet', file_path)
     loader = SQuADLoaderQnA(file_path)
     squad_qa = loader.load()
     
@@ -271,7 +271,7 @@ def main_evaluation(file_path=SHUFFLED_DATASET_PATH, max_evaluations=10000):
 
     print(f"Resuming from document index {current_index + 1} of {len(squad_qa)}")
 
-    max_index = min(current_index + (10000 - total_predictions), len(squad_qa))
+    max_index = min(current_index + (20000 - total_predictions), len(squad_qa))
 
     for doc_id, doc in tqdm(list(squad_qa.items())[current_index:max_index], initial=current_index, total=max_index, desc="Evaluating"):
         question = doc['content']['question']
@@ -310,9 +310,9 @@ def main_evaluation(file_path=SHUFFLED_DATASET_PATH, max_evaluations=10000):
         total_predictions += 1
 
         current_index += 1
-        save_checkpoint(data=predictions_details, current_index=current_index, correct_predictions_jaccard=correct_predictions_jaccard, correct_predictions_cosine=correct_predictions_cosine, total_predictions=total_predictions, correct_contexts=correct_contexts, total_questions=total_questions, file_path='checkpoint.json')
+        save_checkpoint(data=predictions_details, current_index=current_index, correct_predictions_jaccard=correct_predictions_jaccard, correct_predictions_cosine=correct_predictions_cosine, total_predictions=total_predictions, correct_contexts=correct_contexts, total_questions=total_questions, file_path=CHECKPOINT_PATH)
         
-        if total_predictions >= 10000:
+        if total_predictions >= 20000:
             break
 
     if total_predictions > 0:
