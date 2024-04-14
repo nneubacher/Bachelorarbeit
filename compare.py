@@ -46,7 +46,7 @@ def update_plot(threshold, data_with_context, data_without_context, fig, ax):
     ]
 
     metrics = ['Jaccard w/ context', 'Cosine w/ context', 'Jaccard w/o context', 'Cosine w/o context']
-    sns.barplot(x=metrics, y=counts, ax=ax)
+    barplot = sns.barplot(x=metrics, y=counts, ax=ax)
     ax.set_title(f'Correct Predictions at Threshold {threshold}')
     ax.set_ylabel('Count of Correct Predictions')
     ax.set_xlabel('Metric')
@@ -55,6 +55,14 @@ def update_plot(threshold, data_with_context, data_without_context, fig, ax):
     ax.set_ylim(0, 20000)  # Set y-axis range from 0 to 20,000
     ax.set_yticks(np.arange(0, 20001, 2000))  # Set y-axis ticks at intervals of 2,000
 
+    bar_label_fontsize = 10
+    for bar in barplot.patches:
+        ax.text(bar.get_x() + bar.get_width() / 2., 
+                bar.get_height(), 
+                f'{int(bar.get_height())}', 
+                ha='center', va='bottom', 
+                fontsize=bar_label_fontsize, weight='bold')
+    
     # Redraw the canvas
     fig.canvas.draw()
 
