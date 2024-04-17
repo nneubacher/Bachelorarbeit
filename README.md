@@ -16,8 +16,13 @@ To begin examining the results yourself, follow these steps to set up the enviro
    pip install -r requirements.txt
    ```
 
-## Relevant Repository Contents
+## Repository Contents
 
+- `data/`: Directory containing the Stanford Question Answering Dataset.
+- `chromaDB/`: Directory containing the vector store with the embeddings of SQuAD.
+- `toChroma.py`: Script for embedding and storing data from the `data` directory into the `chromaDB` vector store.
+- `RAG.py`: Evaluation script for the RAG-based information retrieval system.
+- `noRAG.py`: Evaluation script for the base model information retrieval system.
 - `compare.ipynb`: Jupyter notebook for interactive analysis and comparison.
 - `compare.py`: Python script for comparing total correct predictions at different thresholds.
 - `predictions.json`: Output from the RAG-based Information Retrieval system.
